@@ -1,0 +1,31 @@
+# LabGuard local dependencies (M1 scaffold).
+# PostgreSQL 16 with a persistent volume and container health check.
+# Credentials come from environment variables only — never commit real secrets.
+# See ../../.env.example for placeholder values.
+name: labguard
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-labguard}
+      POSTGRES_USER: ${POSTGRES_USER:-labguard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in your .env file}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  pgdata:

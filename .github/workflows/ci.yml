@@ -1,0 +1,77 @@
+# M1 CI: lint, typecheck, test, and build the scaffold.
+# No database service: M1 verifies code quality and builds only.
+# DB-backed checks arrive with the M2+ schema.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install API with dev extras
+        working-directory: services/api
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+      - name: Ruff
+        working-directory: services/api
+        run: ruff check .
+      - name: Mypy (strict)
+        working-directory: services/api
+        run: mypy src
+      - name: Pytest
+        working-directory: services/api
+        run: pytest -q
+
+  agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install agent with dev extras
+        working-directory: agent
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+      - name: Pytest
+        working-directory: agent
+        run: pytest -q
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install
+        working-directory: apps/web
+        run: npm ci
+      - name: Lint
+        working-directory: apps/web
+        run: npm run lint
+      - name: Typecheck
+        working-directory: apps/web
+        run: npm run typecheck
+      - name: Build
+        working-directory: apps/web
+        run: npm run build
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate compose file
+        working-directory: infra
+        run: docker compose config
