@@ -49,3 +49,29 @@ Prerequisites: Git, Node.js 22 LTS, Python 3.12, Docker Desktop (for PostgreSQL)
    - `cd agent && python -m venv .venv && .venv/Scripts/python -m pip install -e .[dev] && .venv/Scripts/pytest -q`
 
 Verification commands: API `ruff check .`, `mypy src`, `pytest -q`; agent `pytest -q`; web `npm run lint`, `npm run typecheck`, `npm run build`; infra `docker compose config` (provide `POSTGRES_PASSWORD` in env when validating).
+
+## Database and auth (M2)
+
+M2 adds users, labs, lab memberships, device identity records, and database-backed session auth (see `docs/DATABASE.md`, `docs/API_CONTRACT.md`, and ADR-007 in `docs/DECISIONS.md`).
+
+Environment (API):
+- `DATABASE_URL` (required, fail-fast): e.g. `postgresql+psycopg://labguard:<password>@localhost:5432/labguard`. Never commit real passwords; keep them in `.env` (see `.env.example`).
+- `POSTGRES_PORT` (infra, default `5432`): host-side port mapped to the container. Change it if another PostgreSQL already listens on 5432 on the host.
+
+Migrations (from `services/api`, with `DATABASE_URL` exported):
+- Apply: `.venv/Scripts/python -m alembic upgrade head` (use `.venv/bin/python` on Ubuntu).
+- Verify schema matches models: `alembic check` — must report "No new upgrade operations detected".
+- Show applied revision: `alembic current`.
+- Offline SQL preview (still requires `DATABASE_URL` to be set): `alembic upgrade head --sql`.
+
+Initial-admin bootstrap (run once against a fresh database):
+1. Start the API with `DATABASE_URL` pointing at the migrated database.
+2. `POST /api/v1/auth/bootstrap` with `{ "email", "password" (min 12 chars, max 72 bytes), "display_name" }` returns `201` and the admin user.
+3. Any later call returns `403 BOOTSTRAP_CLOSED`. Further users, labs, and memberships are managed through the lab endpoints (labs are created by the admin; see `docs/API_CONTRACT.md`).
+
+Security properties and limits (M2):
+- Bcrypt cost-12 password hashing; opaque 256-bit session tokens, SHA-256 hash at rest, 12-hour expiry, logout revocation.
+- Browser cookie `labguard_session`: `HttpOnly`, `SameSite=Lax`, `Path=/`, `Secure=False` until TLS is configured — `SameSite=Lax` is the current and only CSRF baseline (no CSRF tokens or Origin checks).
+- Login is throttled per client IP (20 attempts / 60 s, per-process in-memory — not shared across API workers).
+- Deactivated accounts cannot log in and their sessions are rejected by the per-request active-account check.
+- Bootstrap concurrency is serialized by a PostgreSQL advisory lock; on other databases the check-then-insert runs without that lock.

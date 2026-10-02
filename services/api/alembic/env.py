@@ -1,7 +1,7 @@
-"""Alembic environment (M1: metadata target wired, no models yet).
+"""Alembic environment (M2: models registered on Base.metadata).
 
 Database URL is taken from the DATABASE_URL environment variable at
-migration time. Schema revisions arrive in M2+.
+migration time.
 """
 
 import os
@@ -11,6 +11,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from labguard_api.db import Base
+import labguard_api.models  # noqa: F401 -- register table metadata on Base
 
 config = context.config
 if config.config_file_name is not None:
