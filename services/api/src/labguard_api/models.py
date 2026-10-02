@@ -1,15 +1,16 @@
-"""LabGuard M2 ORM models: users, labs, memberships, devices, sessions.
+"""LabGuard M3 ORM models: users, labs, memberships, devices, sessions, audit.
 
-Devices carry identity/lifecycle fields only. Telemetry, enrollment
-tokens, alerts, and incidents arrive in later milestones.
+Devices carry identity/lifecycle fields only. Enrollment tokens (M4),
+telemetry, alerts, and incidents arrive in later milestones.
 """
 
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.types import Uuid
+from sqlalchemy.types import JSON, Uuid
 
 from labguard_api.db import Base
 
@@ -99,7 +100,12 @@ class LabMembership(Base):
 
 
 class Device(Base):
-    """Registered computer (M2: identity record only; no telemetry, no enrollment)."""
+    """Registered computer (M3: identity record + CRUD; no tokens, no telemetry).
+
+    Identity is (lab_id, hostname): hostnames are stored stripped and
+    lowercased so identity is case-insensitive. Both fields are immutable
+    after registration; only metadata and the active flag change.
+    """
 
     __tablename__ = "devices"
     __table_args__ = (UniqueConstraint("lab_id", "hostname", name="uq_devices_lab_hostname"),)
@@ -147,3 +153,31 @@ class UserSession(Base):
     user_agent: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
     user: Mapped[User] = relationship(back_populates="sessions")
+
+
+class AuditLog(Base):
+    """Administrative audit event (M3 writers: device lifecycle only).
+
+    Actor is nullable so system actions can be recorded; deleting a user
+    keeps their rows (SET NULL). Metadata keys are allow-listed in
+    ``audit.record_audit`` and must never contain secrets or raw tokens.
+    There is no read endpoint in M3; rows are inspectable via the database
+    until a viewer arrives with a later milestone.
+    """
+
+    __tablename__ = "audit_logs"
+    __table_args__ = (Index("ix_audit_logs_entity", "entity_type", "entity_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    entity_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    meta: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, index=True
+    )
+
+    actor: Mapped[User | None] = relationship()

@@ -75,3 +75,13 @@ Security properties and limits (M2):
 - Login is throttled per client IP (20 attempts / 60 s, per-process in-memory — not shared across API workers).
 - Deactivated accounts cannot log in and their sessions are rejected by the per-request active-account check.
 - Bootstrap concurrency is serialized by a PostgreSQL advisory lock; on other databases the check-then-insert runs without that lock.
+
+## Device management and audit log (M3)
+
+M3 adds lab-scoped device identity records and a write-only audit trail (see `docs/API_CONTRACT.md` Devices section and ADR-008 in `docs/DECISIONS.md`):
+
+- `POST /api/v1/devices` (lab managers only) registers a device; identity is the (`lab_id`, `hostname`) pair, hostnames are stored lowercased, duplicates report `409 DEVICE_EXISTS`.
+- `GET /api/v1/devices` lists with `lab_id`, `q` (hostname substring), and `is_active` filters plus pagination; `GET /api/v1/devices/{id}` retrieves one; `PATCH /api/v1/devices/{id}` (lab managers only) edits metadata or flips `is_active`. Identity fields cannot be changed. Cross-lab access reads as `404 DEVICE_NOT_FOUND`.
+- Every registration, metadata change, deactivation, and reactivation writes an `audit_logs` row in the same transaction (migration `0002_m3_audit_logs`); there is no audit-read endpoint yet, and no device credentials or enrollment tokens exist until M4.
+
+Run the M3 tests from `services/api`: `.venv/Scripts/python -m pytest -q tests/test_devices.py tests/test_migration.py` (use `.venv/bin/python` on Ubuntu).

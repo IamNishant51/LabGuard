@@ -1,8 +1,8 @@
 """Lab endpoints (M2 surface): create/list/get labs, manage memberships.
 
-Full device CRUD, search, and audit events arrive in M3. Every route is
-server-side authorized: global admins see everything, other users only
-labs they belong to, and anything else is 404.
+Device CRUD, search, and audit events live in routers/devices.py (M3).
+Every route is server-side authorized: global admins see everything,
+other users only labs they belong to, and anything else is 404.
 """
 
 import math

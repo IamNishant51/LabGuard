@@ -32,3 +32,9 @@ def lab_not_found() -> ApiError:
     # Used for every lab a caller may not see (missing, inactive, or simply
     # not a member) so membership cannot be probed.
     return ApiError("LAB_NOT_FOUND", "The requested lab was not found.", 404)
+
+
+def device_not_found() -> ApiError:
+    # Same masking rule as labs: missing, inactive-lab, or simply
+    # not visible to the caller all read as "not found".
+    return ApiError("DEVICE_NOT_FOUND", "The requested device was not found.", 404)

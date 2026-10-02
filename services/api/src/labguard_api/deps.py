@@ -14,8 +14,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from labguard_api.database import get_db
-from labguard_api.errors import forbidden, lab_not_found, unauthenticated
-from labguard_api.models import Lab, LabMembership, Role, User, UserSession
+from labguard_api.errors import ApiError, device_not_found, forbidden, lab_not_found, unauthenticated
+from labguard_api.models import Device, Lab, LabMembership, Role, User, UserSession
 from labguard_api.security import SESSION_COOKIE, hash_session_token
 
 Db: TypeAlias = Annotated[Session, Depends(get_db)]
@@ -123,3 +123,22 @@ def client_ip(request: Request) -> str | None:
     if request.client is None:
         return None
     return request.client.host
+
+
+def get_visible_device(db: Db, user: CurrentUser, device_id: object) -> Device:
+    """Return the device iff the caller may see it; otherwise 404.
+
+    Deactivated devices stay visible to authorized callers (deactivation
+    is the delete path, and managers need the record to re-enable it).
+    Devices in invisible or inactive labs read as not found.
+    """
+    device = db.get(Device, device_id)
+    if device is None:
+        raise device_not_found()
+    try:
+        get_visible_lab(db, user, device.lab_id)
+    except ApiError:
+        # A device in a hidden lab must read as a missing device, never
+        # as a missing lab, so device IDs cannot probe lab membership.
+        raise device_not_found()
+    return device
