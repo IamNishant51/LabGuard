@@ -3,7 +3,7 @@
 ## Data flow
 1. Admin creates lab and device.
 2. Server issues a one-time enrollment token and stores its hash.
-3. Agent is configured with API URL, device ID, and token.
+3. Agent is configured with API URL and token (device identity comes from the bearer credential since M4; there is no device-ID setting).
 4. Agent collects approved metrics and initiates an outbound HTTP request.
 5. FastAPI authenticates the token, resolves its device association, validates payload, and writes telemetry/last-seen in a transaction.
 6. API evaluates thresholds and deduplicates alerts.

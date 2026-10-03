@@ -95,3 +95,13 @@ M4 adds per-device bearer credentials and authenticated telemetry ingestion (see
 - `POST /api/v1/agent/heartbeat` accepts telemetry with a device bearer token only — no user session. Identity comes from the credential; body identity fields are ignored. Each accepted heartbeat writes one `metrics` row plus `metric_volumes` rows, stamps `recorded_at`/`last_seen_at`/`last_used_at` from the server clock, and refreshes reported platform/agent version in a single transaction. Auth failures are a uniform `401 UNAUTHENTICATED`; heartbeats write no audit rows. Rate limiting is deferred to M9.
 
 Run the M4 tests from `services/api`: `.venv/Scripts/python -m pytest -q tests/test_enrollment.py tests/test_migration.py` (use `.venv/bin/python` on Ubuntu). Run the agent checks from `agent/`: `.venv/Scripts/pytest -q`.
+
+## Monitoring agent (M5)
+
+The foreground agent in `agent/src/labguard_agent/` validates its config, collects only approved metrics (CPU, memory, accessible local volumes, OS, agent version), and posts the exact M4 heartbeat with its device bearer token (see `docs/AGENT_SPEC.md` for variables, foreground run, provisioning, and troubleshooting):
+
+- `cd agent && python -m venv .venv && .venv/Scripts/python -m pip install -e .[dev]` (Windows; use `.venv/bin/python` on Ubuntu)
+- Configure `LABGUARD_API_BASE_URL` and `LABGUARD_AGENT_TOKEN` (from `POST /api/v1/devices/{id}/enrollment-token`, shown once), then run: `.venv/Scripts/python -m labguard_agent`
+- Tests: `.venv/Scripts/pytest -q` (82 tests: config, collection, payload, client retry/auth, runner lifecycle; all mocked, no live PC or server needed)
+
+There is no `LABGUARD_DEVICE_ID` — the server binds the heartbeat to the device via the bearer credential. Supported targets remain Windows 10/11 x64 and Ubuntu LTS x64 per `docs/PLATFORM_SUPPORT.md`; real-PC verification is still a pilot task (see `docs/TESTING.md`).
