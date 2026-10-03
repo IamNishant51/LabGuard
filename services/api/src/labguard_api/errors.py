@@ -38,3 +38,10 @@ def device_not_found() -> ApiError:
     # Same masking rule as labs: missing, inactive-lab, or simply
     # not visible to the caller all read as "not found".
     return ApiError("DEVICE_NOT_FOUND", "The requested device was not found.", 404)
+
+
+def device_unauthenticated() -> ApiError:
+    # Uniform response for every device-credential failure (unknown,
+    # revoked, expired, or bound to a disabled device/lab): callers
+    # learn nothing about which check failed.
+    return ApiError("UNAUTHENTICATED", "Invalid or revoked device credential.", 401)

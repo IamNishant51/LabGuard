@@ -85,3 +85,13 @@ M3 adds lab-scoped device identity records and a write-only audit trail (see `do
 - Every registration, metadata change, deactivation, and reactivation writes an `audit_logs` row in the same transaction (migration `0002_m3_audit_logs`); there is no audit-read endpoint yet, and no device credentials or enrollment tokens exist until M4.
 
 Run the M3 tests from `services/api`: `.venv/Scripts/python -m pytest -q tests/test_devices.py tests/test_migration.py` (use `.venv/bin/python` on Ubuntu).
+
+## Device enrollment and heartbeat (M4)
+
+M4 adds per-device bearer credentials and authenticated telemetry ingestion (see `docs/API_CONTRACT.md` Devices/Agent sections and ADR-009 in `docs/DECISIONS.md`):
+
+- `POST /api/v1/devices/{id}/enrollment-token` (lab managers only) issues a bearer token; the raw token is returned exactly once and only its SHA-256 hash is stored. Credentials are reusable until revoked; `expires_at` stays NULL (no expiry enforced). Hash collision reports `503 TOKEN_COLLISION`.
+- `POST /api/v1/devices/{id}/revoke-agent` (lab managers only) revokes all active credentials for the device; idempotent when nothing is active. Both endpoints write audit rows (`device.enrollment_issued`, `device.credential_revoked`) without secrets.
+- `POST /api/v1/agent/heartbeat` accepts telemetry with a device bearer token only — no user session. Identity comes from the credential; body identity fields are ignored. Each accepted heartbeat writes one `metrics` row plus `metric_volumes` rows, stamps `recorded_at`/`last_seen_at`/`last_used_at` from the server clock, and refreshes reported platform/agent version in a single transaction. Auth failures are a uniform `401 UNAUTHENTICATED`; heartbeats write no audit rows. Rate limiting is deferred to M9.
+
+Run the M4 tests from `services/api`: `.venv/Scripts/python -m pytest -q tests/test_enrollment.py tests/test_migration.py` (use `.venv/bin/python` on Ubuntu). Run the agent checks from `agent/`: `.venv/Scripts/pytest -q`.

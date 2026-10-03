@@ -13,12 +13,16 @@ UUID, name, optional location, active flag, created/updated timestamps.
 UUID, lab FK, hostname, optional display name, platform, agent version, active flag, nullable `last_seen_at`, timestamps. Avoid unnecessary hardware serial collection.
 
 ### `agent_credentials`
-UUID, device FK, token hash, created/expiry/revocation/last-used timestamps. Never store or log raw token.
+UUID, device FK (`devices.id`, `ON DELETE CASCADE`), `token_hash` (`String(64)`, unique, SHA-256 hex of the opaque bearer token — never the raw token), `created_at`, nullable `expires_at` (reserved, currently always NULL), nullable `revoked_at` (set = dead), nullable `last_used_at` (stamped by each accepted heartbeat). Index `ix_agent_credentials_device_id`. Added by migration `0003_m4_enrollment_heartbeat`. Deleting a device removes its credentials via CASCADE plus ORM `delete-orphan`.
 
 ### `metrics`
-ID, device FK, server `recorded_at`, optional agent timestamp, CPU percent, memory percent, optional memory used/total bytes, disk percent and used/total bytes. Percentages 0–100; byte counts non-negative. Index `(device_id, recorded_at DESC)`.
+Integer PK, device FK (`devices.id`, `ON DELETE CASCADE`), server `recorded_at` (always the server clock at acceptance), optional agent `agent_timestamp` (client-reported clock, informational only), required `cpu_percent`/`memory_percent`, optional `memory_used_bytes`/`memory_total_bytes`/`disk_percent`/`disk_used_bytes`/`disk_total_bytes`. Ranges enforced by CHECKs: `ck_metrics_cpu_range`, `ck_metrics_memory_range`, `ck_metrics_disk_range` (disk nullable), `ck_metrics_memory_used_nonneg`, `ck_metrics_memory_total_nonneg`, `ck_metrics_disk_used_nonneg`, `ck_metrics_disk_total_nonneg`. Index `ix_metrics_device_recorded (device_id, recorded_at)`. Added by migration `0003_m4_enrollment_heartbeat`. One row is written per accepted heartbeat in the same transaction as the volume rows and the `last_seen_at`/`last_used_at` stamps.
 
-For multiple volumes, prefer a child metric-volume table (`metric_volumes`) with volume label, percent, used bytes, total bytes, rather than assuming one `C:` drive.
+### `metric_volumes`
+Integer PK, `metric_id` FK (`metrics.id`, `ON DELETE CASCADE`), `label` (`String(64)`, e.g. `C:`), required `disk_percent`/`used_bytes`/`total_bytes`. CHECKs: `ck_metric_volumes_disk_range`, `ck_metric_volumes_used_nonneg`, `ck_metric_volumes_total_nonneg`. Index `ix_metric_volumes_metric_id`. Added by migration `0003_m4_enrollment_heartbeat`. Child rows of one heartbeat; deleting a metric removes its volumes.
+
+### Heartbeat field provenance
+Agent-supplied: platform/agent version (refreshed onto the device record when present), `agent_timestamp`, CPU/memory percentages, byte counts, and the volume list. Server-generated: `metrics.recorded_at`, `devices.last_seen_at`, and `agent_credentials.last_used_at` — all stamped from the server clock in the heartbeat transaction, never taken from the request. The heartbeat's device association comes from the authenticated bearer credential's `device_id`; body identity fields cannot override it.
 
 ### `alerts`
 UUID, device FK, type (`heartbeat_missing|cpu_high|memory_high|disk_high`), severity, status (`open|acknowledged|resolved`), dedupe key, title/message, first/last-seen and lifecycle timestamps. Enforce deduplication of active alerts.

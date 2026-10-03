@@ -1,9 +1,10 @@
-"""Audit-event writer (M3: device lifecycle events).
+"""Audit-event writer (M3 device lifecycle; M4 credential lifecycle).
 
 Writers run inside the request transaction via the shared session, so an
 audit row commits exactly when the change it describes commits. Metadata
 keys are allow-listed and values must be JSON scalars (or lists of them);
 anything else is a programmer error and raises instead of being stored.
+Heartbeats never write audit rows: at lab scale they would flood the log.
 """
 
 from collections.abc import Mapping
@@ -18,14 +19,34 @@ DEVICE_REGISTERED = "device.registered"
 DEVICE_UPDATED = "device.updated"
 DEVICE_DEACTIVATED = "device.deactivated"
 DEVICE_REACTIVATED = "device.reactivated"
+DEVICE_ENROLLMENT_ISSUED = "device.enrollment_issued"
+DEVICE_CREDENTIAL_REVOKED = "device.credential_revoked"
 
 DEVICE_ACTIONS = frozenset(
-    {DEVICE_REGISTERED, DEVICE_UPDATED, DEVICE_DEACTIVATED, DEVICE_REACTIVATED}
+    {
+        DEVICE_REGISTERED,
+        DEVICE_UPDATED,
+        DEVICE_DEACTIVATED,
+        DEVICE_REACTIVATED,
+        DEVICE_ENROLLMENT_ISSUED,
+        DEVICE_CREDENTIAL_REVOKED,
+    }
 )
 
 # Never secrets, tokens, hashes, or free-form user input beyond the values below.
+# ``credential_id`` is a non-secret UUID identifying which credential row an
+# enrollment/revocation event refers to.
 METADATA_KEYS = frozenset(
-    {"hostname", "lab_id", "display_name", "platform", "agent_version", "is_active", "changed"}
+    {
+        "hostname",
+        "lab_id",
+        "display_name",
+        "platform",
+        "agent_version",
+        "is_active",
+        "changed",
+        "credential_id",
+    }
 )
 
 _SCALARS = (str, int, float, bool, type(None))

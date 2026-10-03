@@ -1,4 +1,4 @@
-"""Pydantic request/response schemas for M2 auth/labs and M3 devices."""
+"""Pydantic request/response schemas for M2 auth/labs, M3 devices, M4 enrollment."""
 
 import re
 import uuid
@@ -14,6 +14,9 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _HOSTNAME_RE = re.compile(r"^[a-z0-9]([a-z0-9._-]{0,253}[a-z0-9])?$")
 MIN_PASSWORD_LEN = 12
 MAX_HOSTNAME_LEN = 255
+MAX_TEXT_LEN_32 = 32
+MAX_VOLUME_LABEL_LEN = 64
+MAX_VOLUMES_PER_HEARTBEAT = 32
 
 
 def normalize_hostname(value: str) -> str:
@@ -186,3 +189,75 @@ class Page(BaseModel):
 
 def paginate(query_total: int, page: int, page_size: int, items: list[Any]) -> Page:
     return Page(items=items, page=page, page_size=page_size, total=query_total)
+
+
+class EnrollmentTokenOut(BaseModel):
+    """Issuance response: the only place the raw token ever appears (M4)."""
+
+    device_id: uuid.UUID
+    credential_id: uuid.UUID
+    token: str
+    issued_at: datetime
+    expires_at: datetime | None = None
+
+
+class RevokeAgentOut(BaseModel):
+    device_id: uuid.UUID
+    revoked: int
+
+
+def _short_text(value: str | None, label: str, limit: int = MAX_TEXT_LEN_32) -> str | None:
+    if value is None:
+        return None
+    return strip_non_empty(value, label, limit)
+
+
+class HeartbeatVolumeIn(BaseModel):
+    label: str = Field(min_length=1, max_length=MAX_VOLUME_LABEL_LEN)
+    disk_percent: float = Field(ge=0, le=100)
+    used_bytes: int = Field(ge=0)
+    total_bytes: int = Field(ge=0)
+
+    @field_validator("label")
+    @classmethod
+    def _label(cls, value: str) -> str:
+        return strip_non_empty(value, "Volume label", MAX_VOLUME_LABEL_LEN)
+
+
+class HeartbeatMetricsIn(BaseModel):
+    cpu_percent: float = Field(ge=0, le=100)
+    memory_percent: float = Field(ge=0, le=100)
+    memory_used_bytes: int | None = Field(default=None, ge=0)
+    memory_total_bytes: int | None = Field(default=None, ge=0)
+    disk_percent: float | None = Field(default=None, ge=0, le=100)
+    disk_used_bytes: int | None = Field(default=None, ge=0)
+    disk_total_bytes: int | None = Field(default=None, ge=0)
+    volumes: list[HeartbeatVolumeIn] = Field(default_factory=list, max_length=MAX_VOLUMES_PER_HEARTBEAT)
+
+
+class HeartbeatIn(BaseModel):
+    """Agent heartbeat body (M4).
+
+    Device identity always comes from the bearer credential, never from
+    this body: ``hostname`` is accepted but ignored so older agents that
+    send it keep working.
+    """
+
+    hostname: str | None = None
+    platform: str | None = Field(default=None, max_length=MAX_TEXT_LEN_32)
+    agent_version: str | None = Field(default=None, max_length=MAX_TEXT_LEN_32)
+    agent_timestamp: datetime | None = None
+    metrics: HeartbeatMetricsIn
+
+    @field_validator("platform", "agent_version")
+    @classmethod
+    def _reported_text(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None:
+            return None
+        label = str(info.field_name).replace("_", " ").capitalize()
+        return strip_non_empty(value, label, MAX_TEXT_LEN_32)
+
+
+class HeartbeatOut(BaseModel):
+    accepted: bool
+    server_time: datetime

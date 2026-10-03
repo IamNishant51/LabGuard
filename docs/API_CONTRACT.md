@@ -2,7 +2,7 @@
 
 All routes are under `/api/v1`. If implementation changes a route or payload, update this document and tests together.
 
-Sections marked **Implemented (M2)** or **Implemented (M3)** match the code and tests. Sections marked **Planned** are forward-looking and not implemented yet.
+Sections marked **Implemented (M2)**, **Implemented (M3)**, or **Implemented (M4)** match the code and tests. Sections marked **Planned** are forward-looking and not implemented yet.
 
 ## Auth — Implemented (M2)
 Session credential: an opaque token issued at login. Browsers receive it in the `labguard_session` cookie (`HttpOnly`, `SameSite=Lax`, `Path=/`, `Secure=False` until TLS lands); API clients send the same value as `Authorization: Bearer <token>`. Cookie takes precedence when both are present.
@@ -65,15 +65,32 @@ Requires authentication. Responses: `200` with the device; `404` `DEVICE_NOT_FOU
 Lab managers only (global admin, or the lab `admin` role on the device's lab). Request: any subset of `{ "display_name", "platform", "agent_version", "is_active" }` — an empty patch succeeds as a no-op without writing an audit row. Only fields whose value actually changes are recorded.
 Responses: `200` with the updated device; `401` unauthenticated; `403` for lab members without the manager role; `404` `DEVICE_NOT_FOUND` for missing devices, devices the caller may not see, and devices whose lab the caller does not manage; `422` for invalid input. A metadata change writes `device.updated`; flipping `is_active` writes `device.deactivated` (false) or `device.reactivated` (true) instead. Audit rows are written in the same transaction as the device change, so a failed request leaves neither a partial device nor a stray audit row.
 
-Audit rows are write-only in M3: there is no audit-read endpoint. Each row records the acting user, the action, the device id, and metadata limited to `hostname`, `lab_id`, `is_active`, `changed`, plus the device fields supplied at registration — never credentials, tokens, or secrets.
+Audit rows are write-only in M3: there is no audit-read endpoint. Each row records the acting user, the action, the device id, and metadata limited to `hostname`, `lab_id`, `is_active`, `changed`, `credential_id`, plus the device fields supplied at registration — never credentials, tokens, or secrets.
 
-Device enrollment credentials, per-device bearer tokens, heartbeat, and telemetry remain future work (see Admin — Planned and Agent heartbeat — Planned).
+## Devices — Implemented (M4): enrollment and revocation
+Lab managers only, under the same visibility rules as `PATCH`: unknown or invisible devices read as `404` `DEVICE_NOT_FOUND`; members without the manager role get `403`.
 
-## Agent heartbeat — Planned
+### `POST /api/v1/devices/{device_id}/enrollment-token`
+Issues a per-device bearer token for the agent. The raw token is returned exactly once in this response — it is never stored, logged, audited, or returned again. Only the SHA-256 hash is kept (`agent_credentials.token_hash`, unique). The credential has no expiry (`expires_at` is null; revocation is the lifecycle mechanism) and works for heartbeats until revoked, even if more credentials are issued later for the same device. Rotation is revoke-then-issue.
+Responses: `201` `{ "device_id": "<uuid>", "credential_id": "<uuid>", "token": "<raw-once>", "issued_at": "<utc-iso>", "expires_at": null }`; `401` unauthenticated; `403` for lab members without the manager role; `404` `DEVICE_NOT_FOUND` for missing/invisible devices; `422` for a non-UUID id. Writes a `device.enrollment_issued` audit row (metadata: `hostname`, `lab_id`, `credential_id`) in the same transaction.
+
+### `POST /api/v1/devices/{device_id}/revoke-agent`
+Revokes every active credential for the device. Idempotent: when nothing is active it succeeds with `{"device_id": "<uuid>", "revoked": 0}` and writes no audit row (mirroring the M3 no-op-patch rule). Otherwise one `device.credential_revoked` audit row is written per revoked credential (metadata: `hostname`, `lab_id`, `credential_id`), in the same transaction.
+Responses: `200` `{ "device_id": "<uuid>", "revoked": <count> }`; same 401/403/404 rules as above; `422` for a non-UUID id.
+
+## Agent heartbeat — Implemented (M4)
 ### `POST /api/v1/agent/heartbeat`
-Auth: unique per-device bearer token. Device identity comes from the credential association, never from a trusted body field.
+Auth: per-device bearer token in `Authorization: Bearer <token>` — no human session or cookie is accepted or required here. Device identity comes from the credential association, never from a body field (`hostname` in the body is accepted but ignored).
 
-Example:
+Request: `{ "platform": "Windows|null", "agent_version": "0.4.0|null", "agent_timestamp": "<utc-iso>|null", "metrics": { "cpu_percent": 0–100, "memory_percent": 0–100, "memory_used_bytes": ">=0|null", "memory_total_bytes": ">=0|null", "disk_percent": "0–100|null", "disk_used_bytes": ">=0|null", "disk_total_bytes": ">=0|null", "volumes": [{ "label": "...", "disk_percent": 0–100, "used_bytes": ">=0", "total_bytes": ">=0" }] } }` — `cpu_percent` and `memory_percent` are required; at most 32 volumes; labels non-blank, max 64 chars; `platform`/`agent_version` max 32 chars.
+
+Effect (single transaction): inserts one `metrics` row plus its `metric_volumes` rows, stamps `devices.last_seen_at` and `agent_credentials.last_used_at` from the server clock (`recorded_at`), and refreshes the device's reported `platform`/`agent_version` when supplied (each heartbeat reports the currently running OS). Heartbeats write no audit rows.
+Responses: `200` `{ "accepted": true, "server_time": "<utc-iso>" }`; `401` `UNAUTHENTICATED` with message `Invalid or revoked device credential.` for missing, unknown, revoked, or expired tokens and for credentials bound to deactivated devices or inactive labs (identical response in all cases); `422` for invalid payload. Heartbeat rate limiting is deferred to M9.
+
+Telemetry history, dashboard summary, alerts, and incidents remain future work (see Dashboard and maintenance — Planned).
+
+### Heartbeat example
+Identity fields in the body are ignored; the bearer token decides the device:
 ```json
 {
   "agent_version": "0.1.0",
@@ -90,16 +107,17 @@ Example:
   }
 }
 ```
-Server sets `recorded_at` and `last_seen_at`. Validate bounds and request size. Return `{ "accepted": true, "server_time": "..." }`. Expected statuses: 200 accepted, 401 invalid/revoked token, 422 invalid payload, 429 rate-limited, 5xx transient failure.
+Server sets `recorded_at` and `last_seen_at` from its own clock. Returns `{ "accepted": true, "server_time": "<utc-iso>" }`. Expected statuses: 200 accepted, 401 invalid/revoked token, 422 invalid payload. Heartbeat rate limiting is deferred to M9.
 
-## Admin — Planned (labs CRUD in M2; device register/list/get/patch in M3)
+## Admin — Implemented through M4 (labs CRUD in M2; device register/list/get/patch in M3)
 - `GET/POST /api/v1/labs` — Implemented (M2)
 - `PATCH /api/v1/labs/{lab_id}` — Planned
 - `GET/POST /api/v1/devices` — Implemented (M3)
 - `GET /api/v1/devices/{device_id}` — Implemented (M3)
 - `PATCH /api/v1/devices/{device_id}` — Implemented (M3)
-- `POST /api/v1/devices/{device_id}/enrollment-token` — Planned (M4)
-- `POST /api/v1/devices/{device_id}/revoke-agent` — Planned (M4)
+- `POST /api/v1/devices/{device_id}/enrollment-token` — Implemented (M4)
+- `POST /api/v1/devices/{device_id}/revoke-agent` — Implemented (M4)
+- `POST /api/v1/agent/heartbeat` — Implemented (M4)
 
 Raw enrollment token is returned once only.
 
@@ -121,11 +139,11 @@ Use `{ "items": [], "page": 1, "page_size": 25, "total": 0 }`. Bound page size (
 
 ## Errors
 Use `{ "error": { "code": "DEVICE_NOT_FOUND", "message": "The requested device was not found." } }`. Never expose stack traces, SQL, filesystem paths, internal hostnames, or secrets.
-Implemented (M2) error codes: `UNAUTHENTICATED` (401), `FORBIDDEN` (403), `LAB_NOT_FOUND` (404), `USER_NOT_FOUND` (404), `BOOTSTRAP_CLOSED` (403), `LAB_EXISTS` (409), `RATE_LIMITED` (429). Implemented (M3) error codes: `DEVICE_NOT_FOUND` (404, also used to mask devices the caller may not see), `DEVICE_EXISTS` (409). FastAPI request-validation failures return `422`.
+Implemented (M2) error codes: `UNAUTHENTICATED` (401), `FORBIDDEN` (403), `LAB_NOT_FOUND` (404), `USER_NOT_FOUND` (404), `BOOTSTRAP_CLOSED` (403), `LAB_EXISTS` (409), `RATE_LIMITED` (429). Implemented (M3) error codes: `DEVICE_NOT_FOUND` (404, also used to mask devices the caller may not see), `DEVICE_EXISTS` (409). Implemented (M4) error codes: `TOKEN_COLLISION` (503, enrollment issuance only — retry issuance). Device heartbeat auth reuses `UNAUTHENTICATED` (401) with the message `Invalid or revoked device credential.` for all credential failures. FastAPI request-validation failures return `422`.
 
 ## Authorization
 Admin: all authorized resources and user/device administration.
 Staff: view authorized labs, manage alerts/incidents there.
 Viewer: read-only authorized labs.
 Enforce server-side, including cross-lab access checks.
-M2 implements the lab half of this: global admins see all active labs, other users only labs they belong to, lab management requires the lab `admin` role, and anything the caller may not see is 404 (see Labs above). M3 adds device register/list/get/patch under the same model — reads follow lab visibility, writes require lab managers, cross-lab access is 404-masked — but issues no device credentials: enrollment tokens, heartbeat auth, alerts, and incidents are planned.
+M2 implements the lab half of this: global admins see all active labs, other users only labs they belong to, lab management requires the lab `admin` role, and anything the caller may not see is 404 (see Labs above). M3 adds device register/list/get/patch under the same model — reads follow lab visibility, writes require lab managers, cross-lab access is 404-masked — but issues no device credentials. M4 adds enrollment-token issuance, credential revocation, and heartbeat bearer auth under the same manager-write model; alerts and incidents remain planned.

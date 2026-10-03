@@ -14,9 +14,24 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from labguard_api.database import get_db
-from labguard_api.errors import ApiError, device_not_found, forbidden, lab_not_found, unauthenticated
-from labguard_api.models import Device, Lab, LabMembership, Role, User, UserSession
-from labguard_api.security import SESSION_COOKIE, hash_session_token
+from labguard_api.errors import (
+    ApiError,
+    device_not_found,
+    device_unauthenticated,
+    forbidden,
+    lab_not_found,
+    unauthenticated,
+)
+from labguard_api.models import (
+    AgentCredential,
+    Device,
+    Lab,
+    LabMembership,
+    Role,
+    User,
+    UserSession,
+)
+from labguard_api.security import SESSION_COOKIE, hash_device_token, hash_session_token
 
 Db: TypeAlias = Annotated[Session, Depends(get_db)]
 
@@ -142,3 +157,55 @@ def get_visible_device(db: Db, user: CurrentUser, device_id: object) -> Device:
         # as a missing lab, so device IDs cannot probe lab membership.
         raise device_not_found()
     return device
+
+
+def _active_credential(db: Session, raw_token: str) -> AgentCredential | None:
+    """Resolve a device bearer token to its credential row, or None.
+
+    Lookup is by SHA-256 hash (as with human sessions), so no secret
+    comparison — and no timing oracle over token validity — happens here.
+    """
+    credential = db.scalar(
+        select(AgentCredential).where(
+            AgentCredential.token_hash == hash_device_token(raw_token)
+        )
+    )
+    if credential is None or credential.revoked_at is not None:
+        return None
+    if credential.expires_at is not None:
+        expires = credential.expires_at
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires <= datetime.now(timezone.utc):
+            return None
+    return credential
+
+
+async def get_current_device(
+    db: Db,
+    authorization: Annotated[str | None, Header()] = None,
+) -> tuple[Device, AgentCredential]:
+    """Authenticate an agent request via its per-device bearer token (M4).
+
+    Independent of the human session system: no cookies, no sessions, no
+    user involved. Every failure — unknown, revoked, or expired token, or
+    a disabled device/lab — returns the same 401.
+    """
+    raw = _bearer_token(authorization)
+    if not raw:
+        raise device_unauthenticated()
+    credential = _active_credential(db, raw)
+    if credential is None:
+        raise device_unauthenticated()
+    device = db.get(Device, credential.device_id)
+    if device is None or not device.is_active:
+        raise device_unauthenticated()
+    lab = db.get(Lab, device.lab_id)
+    if lab is None or not lab.is_active:
+        raise device_unauthenticated()
+    return device, credential
+
+
+CurrentDevice: TypeAlias = Annotated[
+    tuple[Device, AgentCredential], Depends(get_current_device)
+]

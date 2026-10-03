@@ -40,6 +40,18 @@ Record date, context, decision, and consequences for new decisions.
 - No device credentials in M3: the router never issues, accepts, or returns per-device secrets; `last_seen_at` stays null until the M4 heartbeat. Enrollment tokens, credential revocation, and heartbeat auth are explicitly deferred to M4.
 - Consequences: device administration is available to lab managers through the API with a tamper-evident lifecycle trail, but agents cannot yet enroll and no telemetry flows; the dashboard has no device UI until M6.
 
+## ADR-009 — M4 device enrollment, agent authentication, and heartbeat ingestion
+**Status:** Accepted (M4). Implemented in `services/api` (`routers/devices.py` enrollment/revocation, `routers/agent.py` heartbeat, `deps.py:get_current_device`, `security.py:device-token` helpers, `errors.py:device_unauthenticated`, `audit.py` credential events), migrated by `0003_m4_enrollment_heartbeat` (adds `agent_credentials`, `metrics`, `metric_volumes`; `0001`/`0002` untouched), tested with enrollment/heartbeat tests plus a migration upgrade/downgrade test, and verified live against PostgreSQL 16.
+- Reusable bearer credentials, not single-use enrollment tokens: an issued credential works for heartbeats until revoked, even if more credentials are issued later for the same device. Rotation is revoke-then-issue.
+- Raw credential shown once: the issuance response returns the opaque token exactly once; only its SHA-256 hex digest is stored (`token_hash`, unique). Raw tokens never appear in storage, logs, audit rows, or later responses. A hash collision reports `503 TOKEN_COLLISION` and the client retries.
+- No enforced expiry: `expires_at` exists but stays NULL until an expiration policy is defined; revocation is the only lifecycle mechanism.
+- Multiple active credentials allowed: several credentials may be live per device; revoke-agent revokes all applicable active credentials at once and is idempotent (zero-revoke writes no audit row, mirroring the M3 no-op-patch rule).
+- Credential-bound heartbeat identity: the heartbeat device comes from the authenticated credential's `device_id`; body identity fields are accepted but ignored and cannot override it. Each accepted heartbeat writes one `metrics` row plus `metric_volumes` rows, stamps `recorded_at`/`last_seen_at`/`last_used_at` from the server clock, and refreshes reported platform/agent version, all in one transaction.
+- Uniform 401: missing, unknown, revoked, or expired tokens, and credentials bound to deactivated devices or inactive labs, all return the same `401 UNAUTHENTICATED` (`Invalid or revoked device credential.`).
+- Heartbeats write no audit rows; enrollment and revocation write `device.enrollment_issued` / `device.credential_revoked` rows (metadata limited to `hostname`, `lab_id`, `credential_id`) in the same transaction as the change.
+- Heartbeat rate limiting is deferred to M9.
+- Consequences: agents can now enroll and submit telemetry, but there is still no telemetry-history endpoint, dashboard, alerts, or incidents (M6/M7); per the dual-boot note, each heartbeat reports the currently running OS, so stored platform/version tracks the latest reporter.
+
 ## Open decisions
 - Actual lab OS/version and PC count.
 - Internal LAN versus cloud.
